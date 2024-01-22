@@ -1,0 +1,282 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import h5py
+from scipy.optimize import curve_fit
+from scipy.stats import norm
+from scipy.integrate import quad
+from scipy.stats import poisson
+import math
+
+#-------------------------------------------------------------------------------------------------
+#IMPORT THE DATA
+
+import os
+os.system("wget https://portal.nersc.gov/project/m3438/physics77/data/datalhc.h5")
+
+#-------------------------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------------------------
+#THIS CELL CONVERTS THE DATA WE ARE GIVEN INTO THE MYY DISTRIBUTION THAT WE WILL ANALYZE
+
+# Open h5 file
+h = h5py.File("datalhc.h5",'r')
+
+# Retrieve the data array
+data = h["dataset"][:]
+
+# Check its shape
+ 
+
+
+
+# Here a few functions are defined to get the px, py, pz components of the momentum
+
+def px(pt, phi):
+    return pt*np.cos(phi)
+
+def py(pt,phi):
+    return pt*np.sin(phi)
+
+def pz(pt, eta):
+    return pt*np.sinh(eta)
+
+
+# Using energy and momentum we can calculate the mass of a particle or a multi-particle system
+def mass(E,px,py,pz):
+    return np.sqrt(E**2 - (px**2+py**2+pz**2))
+
+
+
+
+# We will use the functions defined above to calculate
+# the px, py, pz components of the diphoton momentum
+px_yy = px(data[:,0],data[:,2]) + px(data[:,4],data[:,6])
+py_yy = py(data[:,0],data[:,2]) + py(data[:,4],data[:,6])
+pz_yy = pz(data[:,0],data[:,1]) + pz(data[:,4],data[:,5])
+
+# We will also calculate the energy of the diphoton system
+# which is the sum of individual photons
+E_yy = data[:,3] + data[:,7]
+
+# Finally, we can calculate the diphoton mass
+m_yy = mass(E_yy, px_yy,py_yy,pz_yy)
+
+# How does the diphoton mass distribution look like?
+
+OBSERVED_ARRAY, binedges,others =plt.hist(m_yy,bins=55,range=(105,160),label='Data 2015-2018')
+plt.xlabel('$m_{\gamma\gamma}$ [GeV]')
+
+
+plt.ylabel('Number of entries')
+plt.legend()
+plt.show()
+#-------------------------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------------------------
+#THIS CELL GIVES THE BINS AND THE DATA POINTS THAT DESCRIBE BKG
+
+m_yy_bkg = m_yy[np.where(np.abs(m_yy-125) > 5)]
+
+y_samples_include_gap, binedges,others = plt.hist(m_yy_bkg,bins=55,range=(105,160),label='Data 2015-2018')
+
+
+bin_centers = (binedges[:-1] + binedges[1:]) / 2
+bin_start = binedges[:-1]
+bin_end = binedges[1:]
+num_bins = len(bin_centers)
+
+y_samples_bkg_exclude_gap = y_samples_include_gap[np.where(y_samples_include_gap > 0)]
+x_samples = bin_centers[np.where((np.abs(bin_centers-125) > 5))]
+
+plt.scatter(x_samples,y_samples_bkg_exclude_gap,color='r')
+plt.xlabel('$m_{\gamma\gamma}$ [GeV]')
+plt.ylabel('Number of entries')
+plt.legend()
+plt.show()
+#-------------------------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------------------------
+#THIS CELL FITS A FOURTH ORDER POLY TO OUR BKG DATA POINTS
+
+def func1(x, a, b, c, d, e):
+    return a * x**4 + b * x**3 + c*x**2 + d*x + e
+
+params1, covariance = curve_fit(func1, x_samples, y_samples_bkg_exclude_gap)
+
+x_dense = np.linspace(105,160,1000)
+
+plt.scatter(x_samples, y_samples_bkg_exclude_gap, label='Data')
+plt.plot(x_dense,func1(x_dense, *params1), label='Curve fit x^4',color='r')
+
+plt.legend()
+plt.show()
+
+#-------------------------------------------------------------------------------------------------
+#THIS CELL INTEGRATES OVER THE BINS OF OUR BKG FIT LINE TO GIVE US THE BKG ARRAY
+
+def integration(func, start, stop, num_bins, params):
+    integrals = np.zeros(num_bins)
+    bin_width = (stop[0] - start[0])
+    
+    a = params[0]
+    b = params[1]
+    c = params[2]
+    d = params[3]
+    e = params[4]
+
+    for i in range(num_bins):
+
+        integral_of_bin_i, _ = quad(func, start[i], stop[i], args=(a,b,c,d,e))
+        integrals[i] = integral_of_bin_i
+
+    return integrals * bin_width
+
+# Example usage
+x_dense = np.linspace(105, 160, 1000)
+
+BKG_ARRAY = integration(func1, bin_start, bin_end, num_bins, params1)
+#-------------------------------------------------------------------------------------------------
+#THIS CELL GIVES US OUR SIGNAL ARRAY
+
+signal_distribution_data = np.random.normal(125, 2, 10000)
+
+SIGNAL_ARRAY,huh,what = plt.hist(signal_distribution_data, bins=binedges, density=True)
+#-------------------------------------------------------------------------------------------------
+#THIS CELL GIVES US OUR ACTUAL MU VALUE WHICH IS THE NUMBER OF SIGNAL EVENTS
+
+def negative_log_likelihood(mu, signal_array, bkg_array, observed_data):
+    expected_data = mu * signal_array + bkg_array
+    log_likelihood = -np.sum(poisson.logpmf(observed_data, expected_data))
+    return log_likelihood
+
+mu_values = np.linspace(6000, 10000, 10000)
+
+nll_values = np.array([negative_log_likelihood(mu, SIGNAL_ARRAY, BKG_ARRAY, OBSERVED_ARRAY) for mu in mu_values])
+
+min_index = np.argmin(nll_values)
+
+NUMBER_OF_SIGNAL_EVENTS = mu_values[min_index]
+
+#-------------------------------------------------------------------------------------------------
+
+EXPECTED_ARRAY = NUMBER_OF_SIGNAL_EVENTS * SIGNAL_ARRAY + BKG_ARRAY
+
+#-------------------------------------------------------------------------------------------------
+
+
+
+def logPoisson(observed, expected):
+    return poisson.logpmf(observed,expected)
+
+obs = OBSERVED_ARRAY
+bkg = BKG_ARRAY
+sig = SIGNAL_ARRAY * NUMBER_OF_SIGNAL_EVENTS
+EXPECTED_ARRAY = sig + bkg
+
+BKG_PSEUDO_SAMPLES = np.random.poisson(bkg, size=(20000, len(bkg)))
+
+SIG_BKG_PSEUDO_SAMPLES = np.random.poisson(EXPECTED_ARRAY, size=(20000, len(EXPECTED_ARRAY)))
+
+sampleB = BKG_PSEUDO_SAMPLES
+
+sampleSB = SIG_BKG_PSEUDO_SAMPLES
+
+#######################################################################################################
+
+LLB =np.sum(logPoisson(obs, bkg))
+print(LLB)
+LLSB=np.sum(logPoisson(obs, bkg + sig))
+print(LLSB)
+NLLR=2 * (LLB - LLSB)
+
+LLB_sampleB=np.zeros((len(sampleB),1)) 
+LLSB_sampleB=np.zeros((len(sampleB),1)) 
+NLLR_sampleB=np.zeros((len(sampleB),1)) 
+LLB_sampleSB=np.zeros((len(sampleSB),1)) 
+LLSB_sampleSB=np.zeros((len(sampleSB),1)) 
+NLLR_sampleSB=np.zeros((len(sampleSB),1))
+
+
+for i in range(len(sampleB)):
+    LLB_sampleB[i] =sum(logPoisson(sampleB[i],bkg)) 
+    LLSB_sampleB[i]=sum(logPoisson(sampleB[i],bkg+sig)) 
+    NLLR_sampleB[i]= 2*(LLB_sampleB[i]-LLSB_sampleB[i])
+    LLB_sampleSB[i]=sum(logPoisson(sampleSB[i],bkg)) 
+    LLSB_sampleSB[i]=sum(logPoisson(sampleSB[i],bkg+sig)) 
+    NLLR_sampleSB[i]=2*(LLB_sampleSB[i]-LLSB_sampleSB[i])
+    
+LLR_sampleB=-NLLR_sampleB 
+LLR_sampleSB=-NLLR_sampleSB 
+LLR=-NLLR
+points_over_LLR=[x for x in LLR_sampleB if x>LLR]
+n_points_over_LLR=np.size(points_over_LLR)
+pvalue =n_points_over_LLR/np.size(LLR_sampleB)
+
+def p_value_to_significance(p_value): 
+    return -norm.ppf(p_value / 2)
+Z = p_value_to_significance(pvalue)
+
+print(Z)
+print(pvalue)
+plt.hist(LLR_sampleB,color = 'r')
+plt.hist(LLR_sampleSB)
+plt.axvline(LLR,color = 'g')
+
+#######################################################################################################
+
+# Mass Measurement
+mu = 125
+sigma = 2
+x = np.linspace(105,160,55)
+higgs_distribution = norm.pdf(x,mu,sigma)
+
+#NLL as a function of mH
+NLL_higgs = -np.log(higgs_distribution)
+
+#Central value using mH to minimize the NLL
+centre_mH = x[np.argmin(NLL_higgs)]
+
+#Confidence interval (68%) find min,max
+minimum_NLL = np.min(NLL_higgs)
+confidence_interval = np.where(NLL_higgs <= minimum_NLL + 0.5)[0]
+minimum = x[confidence_interval[0]]
+maximum = x[confidence_interval[-1]]
+
+print(f"The central value of the Higgs boson mass (mH) is {centre_mH:.2f} ")
+
+#######################################################################################################
+
+# ... (Your existing code)
+
+# Generate Pseudo Experiments (PEs) from the Background-Only Hypothesis
+num_pes = 1000  # Adjust the number of PEs as needed
+
+pe_zmax_values = []
+
+for _ in range(num_pes):
+    # Generate PE from background-only hypothesis
+    pe_bkg_samples = np.random.poisson(bkg, size=len(bkg))
+    pe_data = pe_bkg_samples  # Assuming background-only
+
+    # Calculate Zmax for each mH hypothesis
+    pe_zmax = -np.inf
+    for mH_value in range(115, 146):
+        # Calculate profile likelihood ratio for each mH value
+        pe_params, _ = curve_fit(func1, bin_centers, pe_bkg_samples)
+        pe_sig_array = np.random.normal(mH_value, 2, len(bkg))
+        pe_expected_array = pe_params[0] * pe_sig_array + pe_bkg_samples
+        pe_llb = np.sum(logPoisson(pe_data, pe_bkg_samples))
+        pe_llsb = np.sum(logPoisson(pe_data, pe_expected_array))
+        pe_nllr = 2 * (pe_llb - pe_llsb)
+
+        if pe_nllr > pe_zmax:
+            pe_zmax = pe_nllr
+
+    pe_zmax_values.append(pe_zmax)
+
+# Calculate Global Significance
+observed_z = NLLR  # Use the Z value observed at 125 GeV
+frac_pe_greater_than_observed = np.sum(np.array(pe_zmax_values) > observed_z) / num_pes
+global_significance = p_value_to_significance(frac_pe_greater_than_observed)
+
+print(f"Global Significance: {global_significance:.2f}")
